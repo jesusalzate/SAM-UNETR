@@ -23,5 +23,5 @@ SAM-UNETR achieved good results on the Clinically Significant Prostate Cancer Se
 
 ## Usage
 
-To use SAM-UNETR first run [Extract_SAM_encoder_weigths.ipynb](Extract_SAM_encoder_weigths.ipynb) to save the weights of the image encoder, then run  requires `Train_model.py`  file that you want to use.
+To use SAM-UNETR first run [Extract_SAM_encoder_weigths.ipynb](models_SAM/Extract_SAM_encoder_weigths.ipynb) to save the weights of the image encoder, then run  requires `Train_model.py`  file that you want to use.
 Finally `Analize_Results_model.py` contains the codes for predictions on each model
