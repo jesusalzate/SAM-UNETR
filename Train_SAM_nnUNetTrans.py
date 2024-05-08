@@ -14,50 +14,48 @@ import nibabel as nib
 import monai
 from monai.networks.nets import UNETR, UNet
 from monai.utils import first
-from monai.data import CacheDataset, DataLoader, Dataset, decollate_batch
+from monai.data import CacheDataset, DataLoader, Dataset, decollate_batch, SmartCacheDataset
 from monai.inferers import SliceInferer
-
+import json
 from time import sleep
 
 from samunetr.SAMUNETR_V2 import SAMUNETR
 
 
+fold =0
+debug = False
 
+data_dir = "/nvmescratch/ceib/Prostate/workdir/nnUNet_raw_data/Task2203_picai_baseline"
 
-#Organize Picai Data
+#Read folds and split data
+json_path = "/nvmescratch/ceib/Prostate/workdir/splits/picai_nnunet/splits.json"
+with open(json_path, "r") as f:
+    splits = json.load(f)
 
-data_picai=pd.read_csv('/home/jaalzate/Tartaglia/Prostate_Tartaglia/codes/partition_1.csv')
+fold_split = splits[fold]
+train = fold_split['train']
+val = fold_split['val']
 
-data_picai["depth"] = data_picai['filepath_t2w_cropped'].apply(lambda path_file: nib.load(path_file).shape[0])
-data_picai["heigth"] = data_picai['filepath_t2w_cropped'].apply(lambda path_file: nib.load(path_file).shape[1])
-data_picai["weigth"] = data_picai['filepath_t2w_cropped'].apply(lambda path_file: nib.load(path_file).shape[2])
-data_picai=data_picai[(data_picai['heigth']!=0) & (data_picai['depth']!=0)]
-data_picai=data_picai[(data_picai['heigth']>96) & (data_picai['depth']>96)]
+train_images = []
+train_labels = []
 
+val_images = []
+val_labels = []
 
+for image_name in train:
+    train_images.append([os.path.join(data_dir, "imagesTr", image_name + "_0000.nii.gz"),
+                        os.path.join(data_dir, "imagesTr", image_name + "_0001.nii.gz"),
+                        os.path.join(data_dir, "imagesTr", image_name + "_0002.nii.gz")])
+    train_labels.append(os.path.join(data_dir, "labelsTr", image_name + ".nii.gz"))
 
-data_picai=data_picai[data_picai['filepath_t2w_cropped'].notna()].reset_index()
-data_picai_human=data_picai[data_picai['human_labeled']==1]
-data_picai.drop(data_picai_human.index, inplace = True)
+for image_name in val:
+    val_images.append([os.path.join(data_dir, "imagesTr", image_name + "_0000.nii.gz"),
+                        os.path.join(data_dir, "imagesTr", image_name + "_0001.nii.gz"),
+                        os.path.join(data_dir, "imagesTr", image_name + "_0002.nii.gz")])
+    val_labels.append(os.path.join(data_dir, "labelsTr", image_name + ".nii.gz"))
 
-#Select only prostate cancer cases
-data_picai=data_picai[data_picai.label==1]
-data_picai_human=data_picai_human[data_picai_human.label==1]
-
-data_picai=data_picai[['filepath_t2w_cropped','filepath_adc_cropped','filepath_hbv_cropped','filepath_labelAI_cropped','filepath_seg_zones_cropped','partition']]
-data_picai_human=data_picai_human[['filepath_t2w_cropped','filepath_adc_cropped','filepath_hbv_cropped','filepath_label_cropped','filepath_seg_zones_cropped','partition']]
-
-
-
-train_picai=data_picai[data_picai['partition']=='tr']
-test_picai=data_picai[data_picai['partition']=='dev']
-
-train_picai_human=data_picai_human[data_picai_human['partition']=='tr']
-test_picai_human=data_picai_human[data_picai_human['partition']=='dev']
-
-
-
-
+print(f"Train: {len(train_images)} images")
+print(f"Val: {len(val_images)} images")
 
 #Organize Prostate158 Data
 path='/nvmescratch/ceib/Prostate/input/prostate158/prostate158_train'
@@ -75,33 +73,35 @@ for df in [train_df_P158, test_df_P158]:
         df[column] = df[column].apply(lambda x: os.path.join(path,x))
 
 
+# Flatten the lists for each modality
+train_t2w = [img[0] for img in train_images]  # Extract all first images (T2-weighted) from each set
+train_adc = [img[1] for img in train_images]  # Extract all second images (ADC) from each set
+train_dwi = [img[2] for img in train_images]  # Extract all third images (DWI) from each set
 
+val_t2w = [img[0] for img in val_images]  # Extract all first images (T2-weighted) from each set
+val_adc = [img[1] for img in val_images]  # Extract all second images (ADC) from each set
+val_dwi = [img[2] for img in val_images]  # Extract all third images (DWI) from each set
 
-#Combine Datasets
-
+# Combine these flattened lists with the paths from the DataFrames
 train_df = pd.DataFrame({
-    't2w': list(train_picai['filepath_t2w_cropped'].values)+list(train_picai_human['filepath_t2w_cropped'].values)+list(train_df_P158['t2'].values),
-    'adc': list(train_picai['filepath_adc_cropped'].values) + list(train_picai_human['filepath_adc_cropped'].values)+list(train_df_P158['adc'].values),
-    'dwi': list(train_picai['filepath_hbv_cropped'].values) + list(train_picai_human['filepath_hbv_cropped'].values)+list(train_df_P158['dwi'].values),
-    'zones': list(train_picai['filepath_seg_zones_cropped'].values) + list(train_picai_human['filepath_seg_zones_cropped'].values)+list(train_df_P158['t2_anatomy_reader1'].values),
-    'label': list(train_picai['filepath_labelAI_cropped'].values) + list(train_picai_human['filepath_label_cropped'].values)+list(train_df_P158['adc_tumor_reader1'].values)
+    't2w': train_t2w + list(train_df_P158['t2'].values),
+    'adc': train_adc + list(train_df_P158['adc'].values),
+    'dwi': train_dwi + list(train_df_P158['dwi'].values),
+    'label': train_labels + list(train_df_P158['adc_tumor_reader1'].values)
 })
 
 test_df = pd.DataFrame({
-    't2w': list(test_picai['filepath_t2w_cropped'].values) + list(test_picai_human['filepath_t2w_cropped'].values)+list(test_df_P158['t2'].values),
-    'adc': list(test_picai['filepath_adc_cropped'].values) +  list(test_picai_human['filepath_adc_cropped'].values)+list(test_df_P158['adc'].values) ,
-    'dwi': list(test_picai['filepath_hbv_cropped'].values) + list(test_picai_human['filepath_hbv_cropped'].values)+list(test_df_P158['dwi'].values),
-    'zones': list(test_picai['filepath_seg_zones_cropped'].values) + list(test_picai_human['filepath_seg_zones_cropped'].values)+list(test_df_P158['t2_anatomy_reader1'].values),
-    'label': list(test_picai['filepath_labelAI_cropped'].values) + list(test_picai_human['filepath_label_cropped'].values)+list(test_df_P158['adc_tumor_reader1'].values)
+    't2w': val_t2w + list(test_df_P158['t2'].values),
+    'adc': val_adc + list(test_df_P158['adc'].values),
+    'dwi': val_dwi + list(test_df_P158['dwi'].values),
+    'label': val_labels + list(test_df_P158['adc_tumor_reader1'].values)
 })
-
-
 
 
 print(train_df.shape)
 print(test_df.shape)
 
-
+#breakpoint()
 
 def Create_dataloaders(train_df,test_df,cache=False):
 
@@ -118,62 +118,105 @@ def Create_dataloaders(train_df,test_df,cache=False):
     
     mode=["bilinear","nearest"]#,"bilinear","bilinear","nearest"]#["bilinear","bilinear","bilinear", "nearest"]
 
-    train_files = [{"t2": t2,'adc': adc,'dwi': dwi,"zones":zones, "label": label} for 
-                    t2,adc,dwi,zones, label in zip(train_df['t2w'].values,
+    train_files = [{"t2": t2,'adc': adc,'dwi': dwi, "label": label} for 
+                    t2,adc,dwi, label in zip(train_df['t2w'].values,
                                     train_df['adc'].values,
                                     train_df['dwi'].values,
-                                    train_df['zones'].values,
                                     train_df['label'].values)]
-    test_files = [{"t2": t2,'adc': adc,'dwi': dwi,"zones":zones, "label": label} for 
-                    t2,adc,dwi,zones,label in zip(test_df['t2w'].values,
+    test_files = [{"t2": t2,'adc': adc,'dwi': dwi, "label": label} for 
+                    t2,adc,dwi,label in zip(test_df['t2w'].values,
                                     test_df['adc'].values,
                                     test_df['dwi'].values,
-                                    test_df['zones'].values,
                                     test_df['label'].values)]
+    
+    if debug:
+        train_files=train_files[:10]
+        test_files=test_files[:10]
     prob=0.175
     train_transforms = monai.transforms.Compose(
         [
-            monai.transforms.LoadImaged(keys=img_columns+label_column+["zones"],reader="NibabelReader",image_only=True),
+            monai.transforms.LoadImaged(keys=img_columns+label_column,reader="NibabelReader",image_only=True),
             monai.transforms.AsDiscreted(keys=label_column,threshold=1), #Convert values greater than 1 to 1
-            monai.transforms.EnsureChannelFirstd(keys=img_columns+label_column+["zones"]),
-            monai.transforms.AsDiscreted(keys="zones",argmax=False,to_onehot=3),
-            monai.transforms.LabelToMaskd(keys="zones",select_labels=[1,2]),
-            monai.transforms.Resized(keys=img_columns+label_column+["zones"],spatial_size=(128,128,-1),mode=("trilinear","trilinear","trilinear","nearest","nearest")),#SAMUNETR: Reshape to have the same dimension
-            monai.transforms.ResampleToMatchd(keys=["adc","dwi","zones","label"],key_dst="t2",mode=("bilinear","bilinear","nearest","nearest")),#Resample images to t2 dimension
-            monai.transforms.ScaleIntensityd(keys=img_columns,minv=0.0, maxv=255.0),
+            monai.transforms.EnsureChannelFirstd(keys=img_columns+label_column),
+            #monai.transforms.Resized(keys=img_columns+label_column,spatial_size=(128,128,-1),mode=("trilinear","trilinear","trilinear","nearest","nearest")),#SAMUNETR: Reshape to have the same dimension
+            monai.transforms.ResampleToMatchd(keys=["adc","dwi","label"],key_dst="t2",mode=("bilinear","bilinear","nearest")),#Resample images to t2 dimension
+            monai.transforms.ScaleIntensityd(keys=["t2","dwi"],minv=0.0, maxv=255.0),
+            monai.transforms.ScaleIntensityRanged(
+            keys=["adc"],
+            a_min=315.09063720703125,
+            a_max=2321.78369140625,
+            b_min=0.0,
+            b_max=255.0,
+            clip=True,
+            ),
             monai.transforms.NormalizeIntensityd(keys=img_columns,subtrahend=[114.495], divisor=[57.63],channel_wise=True),
-            monai.transforms.ConcatItemsd(keys=img_columns+["zones"], name='image', dim=0),
+            monai.transforms.ConcatItemsd(keys=img_columns, name='image', dim=0),
             monai.transforms.ConcatItemsd(keys=label_column, name='label', dim=0),
-            #monai.transforms.RandSpatialCropSamplesd(keys=['image','label'],roi_size=[96,96,-1],num_samples=8,random_size=False),#For the other models
-            monai.transforms.RandRotate90d(keys=['image','label'],spatial_axes=[0,1],prob=prob),
-            monai.transforms.RandZoomd(keys=['image','label'],min_zoom=0.9,max_zoom=1.1,mode=['area' if x == 'bilinear' else x for x in mode],prob=prob),
-            monai.transforms.RandGaussianNoised(keys=["image"],mean=0.1,std=0.25,prob=prob),
-            monai.transforms.RandShiftIntensityd(keys=["image"],offsets=0.2,prob=prob),
-            monai.transforms.RandGaussianSharpend(keys=['image'],sigma1_x=[0.5, 1.0],sigma1_y=[0.5, 1.0],sigma1_z=[0.5, 1.0],sigma2_x=[0.5, 1.0],sigma2_y=[0.5, 1.0],sigma2_z=[0.5, 1.0],alpha=[10.0,30.0],prob=prob),
-            monai.transforms.RandAdjustContrastd(keys=['image'],gamma=2.0,prob=prob),
+            monai.transforms.SpatialPadd(keys=["image", "label"], spatial_size=(128,128,-1)),
+            monai.transforms.RandCropByPosNegLabeld(
+                keys=["image", "label"],
+                label_key="label",
+                spatial_size=(128, 128, -1),
+                pos=3,
+                neg=1,
+                num_samples=1,
+                image_key="image",
+                image_threshold=0,
+            ),
+            monai.transforms.RandRotated(
+                keys=["image", "label"],
+                prob=0.2,
+                range_x=(-30.0 / 360 * 2.0 * np.pi, 30.0 / 360 * 2.0 * np.pi),
+                range_y=(-30.0 / 360 * 2.0 * np.pi, 30.0 / 360 * 2.0 * np.pi),
+                range_z=(-30.0 / 360 * 2.0 * np.pi, 30.0 / 360 * 2.0 * np.pi),
+                mode=["bilinear", "nearest"],
+            ),
+            monai.transforms.RandScaleIntensityd(keys=["image"], prob=0.2, factors=(0.7, 1.4)),
+            monai.transforms.RandGaussianNoised(keys="image", prob=0.1, mean=0, std=0.1),
+            monai.transforms.RandGaussianSmoothd(keys="image", prob=0.1, sigma_x=(0.5, 1)),
+            monai.transforms.RandAdjustContrastd(keys="image", prob=0.15, gamma=(0.75, 1.25)),
+            monai.transforms.RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=[0]),
+            monai.transforms.RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=[1]),
+            monai.transforms.RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=[2]),
+            monai.transforms.ToTensord(keys=["image", "label"]),
             
         ]
     )
     test_transforms = monai.transforms.Compose(
         [
-            monai.transforms.LoadImaged(keys=img_columns+label_column+["zones"],image_only=True),
+            monai.transforms.LoadImaged(keys=img_columns+label_column,reader="NibabelReader",image_only=True),
             monai.transforms.AsDiscreted(keys=label_column,threshold=1), #Convert values greater than 1 to 1
-            monai.transforms.EnsureChannelFirstd(keys=img_columns+label_column+["zones"]),
-            monai.transforms.AsDiscreted(keys="zones",argmax=False,to_onehot=3),
-            monai.transforms.LabelToMaskd(keys="zones",select_labels=[1,2]),
-            monai.transforms.Resized(keys=img_columns+label_column+["zones"],spatial_size=(128,128,-1),mode=("trilinear","trilinear","trilinear","nearest","nearest")),#SAMUNETR: Reshape to have the same dimension
-            monai.transforms.ResampleToMatchd(keys=["adc","dwi","zones","label"],key_dst="t2",mode=("bilinear","bilinear","nearest","nearest")),#Resample images to t2 dimensions
-            monai.transforms.ScaleIntensityd(keys=img_columns,minv=0.0, maxv=255.0),
+            monai.transforms.EnsureChannelFirstd(keys=img_columns+label_column),
+            #monai.transforms.Resized(keys=img_columns+label_column,spatial_size=(128,128,-1),mode=("trilinear","trilinear","trilinear","nearest","nearest")),#SAMUNETR: Reshape to have the same dimension
+            monai.transforms.ResampleToMatchd(keys=["adc","dwi","label"],key_dst="t2",mode=("bilinear","bilinear","nearest")),#Resample images to t2 dimension
+            monai.transforms.ScaleIntensityd(keys=["t2","dwi"],minv=0.0, maxv=255.0),
+            monai.transforms.ScaleIntensityRanged(
+            keys=["adc"],
+            a_min=315.09063720703125,
+            a_max=2321.78369140625,
+            b_min=0.0,
+            b_max=255.0,
+            clip=True,
+            ),
             monai.transforms.NormalizeIntensityd(keys=img_columns,subtrahend=[114.495], divisor=[57.63],channel_wise=True),
-            monai.transforms.ConcatItemsd(keys=img_columns+["zones"], name='image', dim=0),
+            monai.transforms.ConcatItemsd(keys=img_columns, name='image', dim=0),
             monai.transforms.ConcatItemsd(keys=label_column, name='label', dim=0),
-            
+            monai.transforms.SpatialPadd(keys=["image", "label"], spatial_size=(128,128,-1)),
+            monai.transforms.ToTensord(keys=["image", "label"]),
         ]
     )
     
     
     if cache:
-        train_ds = CacheDataset(data=train_files, transform=train_transforms,cache_rate=1.0,num_workers=8,copy_cache=False)#PerSlice(keys='image',transforms=train_transforms),cache_rate=1.0,num_workers=8,copy_cache=False)
+        train_ds = SmartCacheDataset(
+            data=train_files,
+            transform=train_transforms,
+            replace_rate=0.3,
+            cache_num=700, 
+            num_init_workers=4,
+            num_replace_workers=4,
+        )
+        #train_ds = CacheDataset(data=train_files, transform=train_transforms,cache_rate=1.0,num_workers=8,copy_cache=False)#PerSlice(keys='image',transforms=train_transforms),cache_rate=1.0,num_workers=8,copy_cache=False)
         train_loader = DataLoader(train_ds, batch_size=1,shuffle=True)
 
         test_ds = CacheDataset(data=test_files, transform=test_transforms, cache_rate=1.0,num_workers=8,copy_cache=False)
@@ -245,6 +288,7 @@ def train2D(model, data_in, loss, optim, max_epochs, model_dir,device,name, test
                 tepoch.set_postfix(loss=train_loss.item(), dice_score=dice_metric.aggregate(reduction="mean").item())
                 sleep(0.001)
 
+            train_ds.update_cache()
             print('-'*20)
 
             train_epoch_loss /= train_step
@@ -266,7 +310,7 @@ def train2D(model, data_in, loss, optim, max_epochs, model_dir,device,name, test
             save_metric_train.append(epoch_metric_train)
             np.save(os.path.join(model_dir, name+'_metric_train.npy'), save_metric_train)
 
-            if (epoch + 1) % test_interval == 0:
+            if (epoch) % test_interval == 0:
 
                 model.eval()
                 with torch.no_grad():
@@ -278,7 +322,7 @@ def train2D(model, data_in, loss, optim, max_epochs, model_dir,device,name, test
                     for test_data in test_loader:
                         test_step += 1
                         test_volume, test_label = (test_data["image"].to(device),test_data["label"].to(device))
-                        inferer=SliceInferer(roi_size=(None, None),sw_batch_size=16,spatial_dim=2,cval=-1,progress=False)
+                        inferer=SliceInferer(roi_size=(128, 128),sw_batch_size=8,spatial_dim=2,progress=False, overlap=0.5)
                         test_outputs = inferer(test_volume, model)
                         
                         test_loss = loss(test_outputs, test_label)
@@ -349,7 +393,7 @@ print(f'Working on device: {device}')
 
 # ## Unet with Residual Units
 
-model=SAMUNETR(img_size=128,in_channels= 5,out_channels=2,trainable_encoder=True,pretrained=True).to(device)
+model=SAMUNETR(img_size=128,in_channels=3,out_channels=2,trainable_encoder=True,pretrained=True).to(device)
 
 # # Training Model
 
@@ -370,13 +414,17 @@ model_dir='/home/jaalzate/Tartaglia/Prostate_Tartaglia/Paper_Resultados/Results/
 
 
 
-post_pred = monai.transforms.Compose(
+post_pred = monai.transforms.Compose([
         monai.transforms.AsDiscrete(argmax=True, to_onehot=2, num_classes=2),
-        monai.transforms.KeepLargestConnectedComponent(applied_labels=list(range(1, 2))),
+        monai.transforms.KeepLargestConnectedComponent(),]
     )
 
 post_label = monai.transforms.AsDiscrete(to_onehot=2)
 dice_metric = monai.metrics.DiceMetric(include_background=False, reduction="mean_batch", get_not_nans=False,ignore_empty=True)
 iou_metric=monai.metrics.MeanIoU(include_background=False,reduction="mean_batch",get_not_nans=False,ignore_empty=True)
 
-train2D(model, data_in, loss_function, optimizer, 200, model_dir,device=device,name='SAMUnetrV2_128x128_pretrained_OnlyCsPCa')
+train_ds.start()
+
+train2D(model, data_in, loss_function, optimizer, 500, model_dir,device=device,name='SAMUnetrV2_128x128_pretrained_nnUNet_trans_fold0',test_interval=5)
+
+train_ds.shutdown()

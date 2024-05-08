@@ -111,10 +111,10 @@ def Create_dataloaders(train_df,test_df,cache=False):
 
     train_files = [{"t2": t2,'adc': adc,'dwi': dwi,"zones":zones, "label": label} for 
                    t2,adc,dwi,zones, label in zip(train_df['t2w'].values,
-                                     train_df['adc'].values,
-                                     train_df['dwi'].values,
-                                     train_df['zones'].values,
-                                     train_df['label'].values)]
+                                    train_df['adc'].values,
+                                    train_df['dwi'].values,
+                                    train_df['zones'].values,
+                                    train_df['label'].values)]
     test_files = [{"t2": t2,'adc': adc,'dwi': dwi,"zones":zones, "label": label} for 
                    t2,adc,dwi,zones,label in zip(test_df['t2w'].values,
                                      test_df['adc'].values,
